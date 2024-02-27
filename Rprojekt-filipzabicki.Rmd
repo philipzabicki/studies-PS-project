@@ -1,0 +1,520 @@
+---
+title: "Analiza platformy Ethereum"
+author: "Filip Żabicki"
+date: "2023-02-01"
+output:
+  html_document:
+     toc: true
+     toc_float: false
+runtime: shiny
+---
+
+<style type="text/css">
+.main-container {
+  margin-left: 15%;
+  margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(R.options=list(width=1100), 
+                      fig.align='left', out.width='100%')
+library(dplyr)
+library(kableExtra)
+library(pander)
+library(plotly)
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(shiny)
+library(summarytools)
+library(forecast)
+library(prophet)
+library(knitr)
+library(png)
+library(grid)
+library(truncnorm)
+library(corrplot)
+#install.packages("devtools")
+library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+
+```
+
+## Wstęp
+
+
+Postanowiłem zebrać dane dotyczące platformy Ethereum dostępne na stronie [etherscan](https://etherscan.io/charts) oraz przeprowadzić na nich szereg analiz.  
+
+Ethereum jest zdecentralizowaną platformą do tworzenia i uruchamiania smart contractów i aplikacji, wykorzystującą technologię blockchain. Wszystkie operacje obsługiwane są przez EVM (Ethereum Virtual Machine) oraz wiąża się z opłatą (za moc obliczneiową) dla górników nazywaną gas fee. Gas jest wyceniany w systemie rynkowym w jednostkach Gwei ($10^-9$ ETH).  
+
+Na platformie istnieją i wciąż powstają nowe dane, które można by poddać analizie, ale postanowiłem skupić się na tych podstawowych nie wchodząc głębiej. Wszystkie dane są w postaci numerycznych szeregów czasowych o interwale dniowym, oto ich przykłady
+
+- cena w $ natywnej dla sieci kryptowaluty (Ether) oraz całkowita kapitalizacja rynkowa
+- wszelkie dane dotyczące gas'u
+- wielkość, ilość oraz czas powstawania bloków w sieci
+- ilość adresów/portfeli w sieci oraz transakcje z ich udziałem
+- dane dotyczące tokenów ERC20, której działają w oparciu o sieć
+
+i inne.
+
+### Przygotowywanie danych
+
+
+Pominę cały proces pobierania oddzielnych plikow .csv z danymi ze strony podanej we wstępie oraz łączenia ich w jeden dataset. Zamiast tego wczytam przygotowany przeze mnie wcześniej plik.
+
+```{r}
+ethdata <- read.csv(file = 'EtherscanDataCombined.csv', check.names=FALSE)
+ethdata$Date <- as.Date(as.POSIXct(ethdata$UnixTimeStamp, origin="1970-01-01"))
+ethdata <- ethdata[,!(names(ethdata) %in% c('AverageTxnFee(Ether)','UnixTimeStamp'))]
+rownames(ethdata) <- ethdata$Date
+
+print(dfSummary(ethdata[,!(names(ethdata) %in% c('Date', ''))], 
+                varnumbers   = FALSE, 
+                valid.col    = FALSE, 
+                graph.magnif = 1.5),
+                na.col = FALSE,
+                row.names = FALSE,
+      method = 'render')
+
+```
+### Podstawowe charakterystyki oraz rozkłady
+
+
+W przypadku szeregów czasowych analiza takich charakterystyk jak średnia, mediana czy kwantyle nie zawsze ma sens. Po przeanalizowaniu wyników oraz zagłębieniu się w sens każdej cechy, jedyne, dla których te wskaźniki wydają się mieć sens przeanalizuje poniżej.
+
+
+---
+# W tym miejscu po wielu problemach postanowiłem odnotowywać momenty w których R wydłuża czas tworzenia raportu o 30lat,
+# okazuje się że banalne zadanie jakim jest zrobienie gridu subplotów 3x2 gdzie każdy ma swój tytuł
+# wymaga niesamowitej ekwilibrystyki. Na githubie jest nawet request feature'a który to naprawi (z 2016)
+# oraz przykład czytelnego jednolinijkowca w pythonie który załatwia problem
+# https://github.com/plotly/plotly.R/issues/660
+---
+
+#### AvgBlockTime (Secs)
+
+
+```{r figures1, echo=FALSE}
+fig1_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$`AvgBlockTime(Secs)`, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig1_2 <- plot_ly(y = ethdata$`AvgBlockTime (Secs)`, type='violin')
+fig1 <- subplot(fig1_1, fig1_2) %>% layout(yaxis = list(title = 'Sekundy na blok'))
+fig1
+pander(summary(ethdata$`AvgBlockTime(Secs)`))
+```
+
+
+Jest to średni dla danego dnia czas w sekundach potrzebny do włączenia nowego bloku do blockchain'u Ethereum.
+
+Z wykresu i charakterystyk wynika że średni czas potrzebny na powstanie nowego bloku wynosi 14.4s, mediana jest niewiele mniejsza i wynosi 13.17s. Wszystkie wartości zdają się oscylować blisko średniej i mediany, ale jest kilka okresów, w których czas ten znacząco sie wydłuża do momentu osiągniecia lokalnej wartości maksymalnej po czym bardzo szybko wraca do średniej. 
+
+Globalna wartość maksymalna wynosi 30.31s, jest ponad dwukrotnie większa od średniej i została osiągnięta we wrześniu 2017 roku. Najniższy czas został osiągnięty pierwszego dnia działania sieci, wynosił 4.46s i był dużo mniejszy niż średnia oraz każdy kolejny odczyt.
+
+#### DailyNewBlocks
+
+```{r figures2, echo=FALSE}
+fig2_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$DailyNewBlocks, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig2_2 <- plot_ly(y = ethdata$DailyNewBlocks, type='violin')
+fig2 <- subplot(fig2_1, fig2_2) %>% layout(yaxis = list(title = 'Nowe bloki'))
+fig2
+pander(summary(ethdata$DailyNewBlocks))
+```
+
+Liczba codziennych nowych bloków w sieci Ethereum stale rosła w ciągu ostatnich kilku miesięcy. Średnio w całym okresie powstawało 6025 nowych bloków dziennie. Szczytową dzienną liczbę nowych bloków w sieci Ethereum odnotowano w grudniu 2022 r., kiedy to dodano ponad 7180 nowych bloków.
+
+Widać odwrotną korelację z poprzednia cechą (AvgBlockTime), co jest logiczne gdyż doba ma 24 godziny a jeżeli średni czas stworzenia nowego bloku rośnie to ich ilość wytworzona w ciągu jednego dnia spadnie.
+
+Stały wzrost liczby nowych bloków jest pozytywnym sygnałem dla sieci Ethereum, gdyż świadczy o rosnącym zapotrzebowaniu na usługi sieci i wzroście wykorzystania.
+
+#### Average Txn Fee (USD)
+
+```{r figures3, echo=FALSE}
+fig3_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$`AverageTxnFee(USD)`, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig3_2 <- plot_ly(y = ethdata$`AverageTxnFee(USD)`, type='violin')
+fig3 <- subplot(fig3_1, fig3_2) %>% layout(yaxis = list(title = 'Opłata w USD'))
+fig3
+pander(summary(ethdata$`Average Txn Fee (USD)`))
+```
+
+Średnia opłata transakcyjna w sieci Ethereum wahała się w ciągu ostatnich kilku miesięcy. Średnia opłata transakcyjna w USD z całego okresu wynosi $4.53. Jednak liczba ta znacznie różni się w zależności od zapotrzebowania na transakcje w sieci i ogólnego przeciążenia sieci.
+
+Widać dużo wartości odstających co oznacza że w okresach dużego popytu średnia opłata transakcyjna przekracza kilkukrotnie średnią z całego okresu. Po za tymi okresami wartości oscylują wokół średniej. Największa średnia dniowa opłata na poziomie $200 miała miejsce w maju 2022, jest większa aż 44 razy od średniej wartości.
+
+#### MiningRewards (ETH)
+
+```{r figures4, echo=FALSE}
+fig4_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$`MiningRewards(ETH)`, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig4_2 <- plot_ly(y = ethdata$`MiningRewards(ETH)`, type='violin')
+fig4 <- subplot(fig4_1, fig4_2) %>% layout(yaxis = list(title = 'Wykopane ETH'))
+fig4
+pander(summary(ethdata$`MiningRewards (ETH)`))
+```
+
+Cecha ta przedstawia ilość nowych 'wykopanych' dziennie przez górników Etherów, które stanowiły główne źródło podaży aktywa. Z wielu powodów m.in. ekologicznych wynikających z dużego żużycia energii przez sieć oraz wchłonięcia całej podaży kart graficznych na rynku, 15 września 2022 roku platforma Ethereum przeszła zmianę algorytmu konsensusu z PoW na PoS, gdzie nie ma nagród za kopanie, co widać na wykresie. Fakt ten może mieć wpływ na zaburzenie wsp. korealcji między cechami.
+
+Najwyższa koncentracja nagród znajduje się wokół wartości mediany, a rozpiętość nagród maleje w miarę oddalania się od mediany. Wykres skrzypcowy wskazuje, że większość dziennych nagród blokowych w sieci Ethereum mieści się w pewnym zakresie, z niewielką liczbą nagród skrajnych.
+Wykres pokazuje, że było więcej bloków z wysokimi nagrodami niż blokami z niskimi nagrodami.
+
+#### NetworkUtilization (1=100%)
+
+```{r figures5, echo=FALSE}
+fig5_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$`NetworkUtilization(1=100%)`, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig5_2 <- plot_ly(y = ethdata$`NetworkUtilization(1=100%)`, type='violin')
+fig5 <- subplot(fig5_1, fig5_2) %>% layout(yaxis = list(title = 'Wykorzystanie w %'))
+fig5
+pander(summary(ethdata$`NetworkUtilization (1=100%)`))
+```
+
+Jest to wskaźnik reprezentujący średnie zużycie gazu powyżej limitu gazu w procentach. Zapewnia kompleksowy wgląd w ogólne wykorzystanie sieci Ethereum, w tym liczbę przetworzonych transakcji, ilość zużytego gazu i liczbę wdrożonych smart-contractów.
+
+Z wykresu skrzypcowego można zauważyć, że wykorzystanie sieci w sieci Ethereum ma tendencję do wahań, z pewnymi okresami niskiego i średniego wykorzystania oraz długim okresem wysokiego wykorzystania, który skończył się w sierpniu 2021 roku. Po tym okresie sieć jest zużywana w stopniu trochę większym od wartości średniej wynoszącej 59%.
+
+#### TotalUncleBlocks
+
+```{r figures6, echo=FALSE}
+fig6_1 <- plot_ly(economics, x = ethdata$Date, y = ethdata$TotalUncleBlocks, type="scatter", mode="lines+markers", fill = "tozeroy")%>%layout(showlegend = FALSE)
+fig6_2 <- plot_ly(y = ethdata$TotalUncleBlocks, type='violin')
+fig6 <- subplot(fig6_1, fig6_2) %>% layout(yaxis = list(title = 'Liczba Bloków Uncle'))
+fig6
+pander(summary(ethdata$TotalUncleBlocks))
+```
+
+Cecha TotalUncleBlocks pokazuje całkowitą dzienną liczbę wygenerowanych bloków w sieci Ethereum, które są uważane za bloki Uncle. Blok Uncle to blok, który jest wydobywany i włączany do łańcucha bloków, ale nie jest włączany do głównego łańcucha. Zamiast tego staje się częścią alternatywnego łańcucha, znanego jako łańcuch Uncle. Bloki Uncle powstają, gdy dwóch(lub więcej) górników generuje blok mniej więcej w tym samym czasie, co prowadzi do jednoczesnego wydobywania i rozgłaszania wielu bloków w sieci. Sieć Ethereum zazwyczaj wybiera blok z najwyższym dowodem pracy do włączenia do głównego łańcucha, podczas gdy inne bloki stają się blokami Uncle.
+
+Powyżej 3ciego kwantyla widać bardzo dużą rozpiętość przyjmowanych wartości co wskazuje na okresy duzej rywalizacji między górnikami o dodawanie bloków do łańcucha bloków, natomiast niska wartość mediany i niewielki rozstęp między wartościami pierwszego i trzeciego kwartyla mogą wskazywać na bardziej scentralizowany proces wydobywania z mniejszą liczbą górników. Wartość minimalna jest 'przekłamana' przez zmiane algorytmu konsensusu po wrześniu 2022.
+
+### Analiza trendu i sezonowości
+
+Analiza trendu i sezonowości jest ważnym krokiem w analizie szeregów czasowych, ponieważ pozwala uzyskać lepsze zrozumienie wzorców w danych. Trend oznacza długoterminową tendencję w danych, podczas gdy sezonowość odnosi się do powtarzających się wzorców, które występują w określonych porach roku.
+
+
+Przy analizie trendu zamiast używać średnich kroczących (SMA, EMA itp.) postanowiłem użyć pakietu timetk oraz LOWESS.
+
+LOWESS (Locally Weighted Scatterplot Smoothing) jest techniką wygładzania wykresu, która polega na dopasowaniu lokalnych krzywych regresji do danych punktów.
+
+Algorytm działa w ten sposób, że dla każdego punktu na wykresie obliczane są wagi dla innych punktów znajdujących się w jego otoczeniu. Następnie, dla każdego punktu, wyznaczana jest krzywa regresji, która najlepiej dopasowuje punkty o największych wagach.
+
+Proces ten jest powtarzany wielokrotnie dla każdego punktu, aż do momentu uzyskania gładkiej krzywej przechodzącej przez wszystkie punkty. W ten sposób, algorytm LOWESS umożliwia wygładzenie danych punktowych, zachowując przy tym istotne dla analizy trendy i kształty wykresu.
+
+Możliwe są 2 opcje: 
+1. span - Wybieramy procent całkowitej liczby obserwacji, które zostaną użyte do wykryca trendu.
+2. period - Liczba obserwacji, które mają zostać uwzględnione w wygładzaniu lokalnym. Podobnie jak wybór rozmiaru okna dla średniej ruchomej.
+
+#### Generowanie lini trendu przy użyciu parametru 'span'
+```{r trendlineapp, fig.asp = 0.8, fig.width = 10}
+# Define UI
+ui <- fluidPage(
+  selectInput(
+    'feature', label = 'Wybierz cechę:',
+    choices = names(ethdata), selected = "EtherPrice(USD)"
+  ),
+  sliderInput(
+    'span', label = 'Wybierz procent/część danych:',
+    min = 0.01, max = 1, step = 0.01, value = 0.3
+  ),
+  plotOutput("plot")
+)
+
+# Define server
+server <- function(input, output) {
+  current_plot <- reactive({
+    ethdata %>% select(Date, input$feature)
+  })
+
+  output$plot <- renderPlot({
+    plot_time_series(current_plot(), current_plot()[,1], current_plot()[,2], .interactive = F, .smooth_span=input$span)
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server, list(height = 1080, width=1920))
+```
+
+#### Generowanie lini trendu przy użyciu parametru 'period'
+```{r trendline_span, echo=F, fig.asp = 0.8, fig.width = 10}
+# Define UI
+ui <- fluidPage(
+  selectInput(
+    'feature', label = 'Wybierz cechę:',
+    choices = names(ethdata), selected = "EtherPrice(USD)"
+  ),
+  sliderInput(
+    'span', label = 'Wybierz wielkość okna:',
+    min = 2, max = length(ethdata$`AverageTxnFee(USD)`), step = 5, value = 50
+  ),
+  plotOutput("plot")
+)
+
+# Define server
+server <- function(input, output) {
+  current_plot <- reactive({
+    ethdata %>% select(Date, input$feature)
+  })
+
+  output$plot <- renderPlot({
+    plot_time_series(current_plot(), current_plot()[,1], current_plot()[,2], .interactive = F, .smooth_period=input$span)
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server, list(height = 1080, width=1920))
+```
+
+
+```{r trendline_period, echo=F, eval=F, fig.asp = 0.8, fig.width = 10}
+selectInput(
+  'feature', label = 'Wybierz cechę:',
+  choices = names(ethdata), selected = "EtherPrice(USD)"
+)
+selectInput(
+  'span', label = 'Wybierz stopień wygładzania trendu:',
+  choices = seq(0, 1, by=0.05), selected = 0.3
+)
+
+span <- reactive({input$span})
+current_plot <- reactive({
+  ethdata %>% select(Date, input$feature)
+})
+
+#renderPrint({plot_time_series(current_plot(), current_plot()[,1], current_plot()[,2], .interactive = FALSE)})
+
+renderPlot({
+  plot_time_series(current_plot(), current_plot()[,1], current_plot()[,2], .interactive = F, .smooth_span=span())
+})
+```
+
+
+Do Analizy sezonowości postanowiłem użyć wbudowanej funkcji decompose() dla szeregów czasowych, pozwala ona rozbić dane na 3 czynniki: trendu, sezonowość i elementu losowego. Sezonowość może mieć charakter addytywny — wtedy wahania sezonowe są stałe w poszczególnych okresach lub multiplikatywny, kiedy czynniki sezonowe są proporcjonalne do funkcji trendu.
+
+Pniżej znajduje się interfejs pozwalający wybrać parametr freq z funkcji ts(), który odpowiada za długość okresu wewnątrz którego będzie badana sezonowość.
+
+```{r seasonality, echo=F, fig.asp = 0.8, fig.width = 10}
+
+
+ui <- fluidPage(
+  selectInput(
+    'feature', label = 'Wybierz cechę:',
+    choices = names(ethdata), selected = "EtherPrice(USD)"
+  ),
+  sliderInput(
+    'freq', label = 'Wybierz częstotliwość: ',
+    min = 2, max = 365, step = 5, value = 365
+  ),
+  plotOutput("plot")
+)
+
+# Define server
+server <- function(input, output) {
+  decomposed_dynamic <- reactive({
+    decompose(ts(ethdata%>%select(input$feature), frequency=input$freq, start=c(2015,211)))
+  })
+
+  output$plot <- renderPlot({
+    plot(decomposed_dynamic())
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server, list(height = 1080, width=1920))
+```
+
+Wiedząc, że wejściowy szereg to suma lub iloczyn czynników po dekompozycji, stworzyłem kod pozwalający sprawdzić jak będzie wyglądał taki szereg gdy czynnik losowy wynikający z dekompozycji zastąpię wygenerowanymi losowo liczbami z rozkładem normalnym.
+
+```{r random, echo=F, fig.asp = 0.8, fig.width = 10}
+col_names <- colnames(ethdata)
+col_names <- col_names[-which(col_names %in% c("Date", ""))]
+
+ui <- fluidPage(
+  selectInput(
+    'feature', label = 'Wybierz cechę:',
+    choices = col_names, selected = "EtherPrice(USD)"
+  ),
+  radioButtons("type", "Typ sezonowości:",
+               c("Additive" = "additive",
+                 "Multiplicative" = "multiplicative")),
+  sliderInput(
+    'freq', label = 'Wybierz częstotliwość: ',
+    min = 2, max = 365, step = 5, value = 365
+  ),
+  sliderInput(
+    'multi', label = 'Wybierz wpłwy czynnika losowego: ',
+    min = 0.1, max = 2, step = 0.1, value = 1
+  ),
+  plotOutput("actual"),
+  plotOutput("rand")
+)
+
+server <- function(input, output) {
+  decomposed_dynamic <- reactive({
+    decompose(ts(ethdata%>%select(input$feature), frequency=input$freq, start=c(2015,211)), type = input$type)
+  })
+  #deomposed_rand <- reactive({ decomposed_dynamic()$seasonal+input$multi*rnorm(length(ethdata$`AverageTxnFee(USD)`))+decomposed_dynamic()$trend })
+  deomposed_rand <- reactive({
+    if (input$type=="additive") {
+      decomposed_dynamic()$seasonal+decomposed_dynamic()$trend+input$multi*rnorm(length(ethdata$`AverageTxnFee(USD)`))
+    }
+    else if (input$type=="multiplicative") {
+      decomposed_dynamic()$seasonal*decomposed_dynamic()$trend*input$multi*rtruncnorm(n=length(ethdata$`AverageTxnFee(USD)`), a=0, b=1)
+    }
+    
+     })
+  deomposed <- reactive({
+    if (input$type=="additive") {
+      decomposed_dynamic()$seasonal+decomposed_dynamic()$trend+input$multi*decomposed_dynamic()$random
+    }
+    else if (input$type=="multiplicative") {
+      decomposed_dynamic()$seasonal*decomposed_dynamic()$trend*input$multi*decomposed_dynamic()$random
+    }
+    })
+  
+  output$actual <- renderPlot({
+    plot( deomposed())
+    title(main=paste("Wykryty czynnik losowy, ", input$feature, sep=""))
+  })
+  output$rand <- renderPlot({
+    plot( deomposed_rand())
+    title(main=paste("Czynnik losowy z rozkładu normalnego, ", input$feature, sep=""))
+  })
+}
+
+shinyApp(ui = ui, server = server, list(height = 1080, width=1920))
+```
+
+Jak widać w przypadku każdej cechy czynnik losowy ma bardzo duży wpływ na kształtowanie się danych. Rozkładając szereg na czynniki w rozumienu multiplikatywnym czynnik losowy generowany z rozkładu normalnego całkowicie zmienia charakter danych, nawet gdy losowane liczby zostaną ograniczone z dołu przez 0 (nie robiąc tego szereg wygląda jak szum z mniejszymi i większymi amplitudami).
+
+Teraz użyję pakietu fbprophet, stworzonego przez META. Algorytm fbprophet automatycznie dostosowuje się do danych wejściowych i wykrywa nieregularności w szeregach czasowych, takie jak skoki, zmiany trendu i sezonowości. Ponadto pakiet umożliwia modelowanie efektów świąt i innych wydarzeń sezonowych oraz prognozowanie przyszłości.
+
+Oto kod, który służy do stworzenia wykresu czyników sezonowowści przy użyciu fbprophet:
+
+```{r prophet_static, echo=T, eval=F}
+
+dsy_data <- data.frame(ds = ethdata$Date, y = ethdata[,c("NetworkUtilization(1=100%)")])
+m <- prophet(dsy_data, daily.seasonality = TRUE)
+future <- make_future_dataframe(m, periods = 1)
+forecast <- predict(m, future)
+png(filename=paste("NetworkUtilization(1=100%)", ".png", sep=""), width = 1280, height = 850)
+prophet_plot_components(m, forecast)
+dev.off()
+```
+
+Z faktu, że wykonanie tego programu dla wszystkich cech trwało by dość długo postanowiłem wygenerować je samemu, nie dając możliwości dynamicznego wyboru cechy z użyciem interfejsu.
+
+Kod który użyłem do wygenerowania wykresów:
+```{r prerendered, echo=T, eval=F}
+for(i in colnames(ethdata)) {
+  if (i!="Date" & i!="") {
+    dsy_data <- data.frame(ds = ethdata$Date, y = ethdata[,c(i)])
+    m <- prophet(dsy_data, daily.seasonality = TRUE)
+    future <- make_future_dataframe(m, periods = 1)
+    forecast <- predict(m,future)
+    png(filename=paste(i, ".png", sep=""), width = 1280, height = 850)
+    prophet_plot_components(m, forecast)
+    dev.off()
+    
+  }
+}
+```
+
+```{r, echo=T, eval=T}
+col_names <- colnames(ethdata)
+col_names <- col_names[-which(col_names %in% c("Date", ""))]
+
+ui <- fluidPage(
+  selectInput("imgfile", "Wybierz cechę:", choices = col_names), 
+  selected = "AverageTxnFee(USD)",
+  imageOutput("myimage")
+)
+
+server <- function(input, output) {
+  output$myimage <- renderImage({
+    width  <- session$clientData$output_myImage_width
+    height <- session$clientData$output_myImage_height
+    
+    filename <- paste0(input$imgfile, ".png")
+    
+    list(src = paste0("www/", filename),
+         contentType = "image/png",
+         height=720, width=1280,
+         alt = input$imgfile)
+  }, deleteFile = FALSE)
+}
+
+shinyApp(ui, server, options = list(height = 864, width=1536))
+```
+
+
+Jak widać dla większości cech trend w ciągu dnia, tygodniowy oraz rocnzy wydają się zbliżone. Na podstawie cechy "AverageTxnFee(USD)" mogę stwierdzić że odczytane przez pakiet trendy mają sens. Cecha ta opisuje średnią opłatę transakcyjną zapłaconą w ciągnu dnia w sieci, która rośnie wraz ze wzrostem liczby transakcji/uczestników sieci. Na wykresie tygodniowym dobrze widać że opłata jest wyższa w dni robocze(dni sesji giełdowych) oraz spada w weekendy, dodatkowo w okresie wakacyjnym w okolicach lipca średnia cena opłat również zalicza dołek.
+
+### Badanie korelacji i autokorelacji 
+
+```{r correlations, echo=F}
+m<-cor(ethdata[, -which(names(ethdata) %in% c("Date", ""))])
+corrplot(m, order = 'FPC', method = 'shade', tl.cex=0.75, addrect = 8)
+```
+
+Cecha "EtherPrice(USD)" posiada nietrywialną korelację z "AvgNetworkHashRate(GHs)", "AvgNetworkDifficulty(TH)", "AvgBlockSize(Bytes)", "ERC20UniqueAddressTotalCount" oraz "AvgGasLimit". Te cechy są ściśle powiązane z popularnością platformy i ilością start-upów działajacych w oparciu o nią, Co ciekawe wartość 2ch pierwszych spadła do 0 po przejściu na PoS.
+
+Jedyna cecha, która wykazuje znaczące negatywne korelacje z innymi to wynagrodzenia wypłacane górnikom (MiningRewards(ETH)). Najsilniejszą negatywną korelacje ze sobą wykazują cechy AvgBlockTime(Secs) i DailyNewBlocks co szacowałem w rozdziale 'Podstawowe charakterystyki oraz rozkłady'.
+
+### Analiza PCA 
+```{r, fig.asp = 0.8, fig.width = 10, , echo=F}
+ethdata.pca <- prcomp(ethdata[, -which(names(ethdata) %in% c("Date", ""))], center = TRUE,scale. = TRUE)
+ggbiplot(ethdata.pca, groups=ethdata$`EtherPrice(USD)`, obs.scale = 1, choices=c(1,2), var.scale = 1)+ggtitle("Analiza głównych składowych dla danych z platformy Ethereum")
+#pcaColnames(ethdata[, -which(names(ethdata) %in% c("Date", ""))],  method="kendall")
+```
+Kolorem niebieskim oznaczone są obserwacje zgrupowane do cechy EtherPrice(USD).
+Widzimy wiele wektorów bliskich prostopadłości, co wskazuje na brak korelacji między tymi cechami a także kilka takich, które nakładają się na siebie - cechy najbardziej skorelowane. Cechy NetworkUtilization(1=100%), AvgBlockTime(Secs) oraz MiningRewards(ETH) zdają się zawierać najmniej zmienności cechy EtherPrice(USD).
+
+
+### Modelowanie i prognoza
+
+Wybrałem cechę, która ma największy wpływ na składową główną i użyłem jej jako dodatkowy regresor do predykcji ceny.
+
+```{r pred, fig.asp = 0.8, fig.width = 10}
+
+# Przygotowanie danych do analizy PCA
+data_pca <- ethdata[, -which(names(ethdata) %in% c("Date", ""))]
+data_pca <- scale(data_pca) # Standaryzacja cech
+
+# Analiza PCA
+pca_result <- prcomp(data_pca)
+
+# Wybór najbardziej znaczących składowych PCA
+pca_variances <- pca_result$sdev^2
+pca_variances_ratio <- pca_variances / sum(pca_variances)
+cumulative_pca_variances_ratio <- cumsum(pca_variances_ratio)
+num_pca_components <- sum(cumulative_pca_variances_ratio <= 0.95)
+
+# Przypisanie wartości składowych PCA jako nowych kolumn do oryginalnych danych
+pca_scores <- as.data.frame(pca_result$x[, 1:num_pca_components])
+colnames(pca_scores) <- paste0("pca_", 1:num_pca_components)
+data_pca <- cbind(ethdata$`EtherPrice(USD)`, pca_scores)
+data_pca$ds <- ethdata$Date
+colnames(data_pca)[2] = "y"
+
+model <- prophet(daily.seasonality=TRUE) %>%
+  fit.prophet(data_pca)
+
+future <- make_future_dataframe(model, periods = 365)
+forecast <- predict(model, future)
+plot(model, forecast)
+future_with_reg <- forecast[,c('ds','yhat')]
+colnames(future_with_reg)[2] = "pca_1"
+
+colnames(data_pca)[2] = "pca_1"
+colnames(data_pca)[1] = "y"
+# jako regresora uzyje wartosci juz znanych a predykcji dla przyszłych
+future_with_reg[1:length(data_pca$y),"pca_1"] <- data_pca[1:length(data_pca$y),"pca_1"]
+
+model <- prophet(daily.seasonality=TRUE) %>%
+  add_regressor('pca_1') %>%
+  fit.prophet(data_pca)
+forecast_w_pca_1 <- predict(model, future_with_reg)
+plot(model, forecast_w_pca_1)
+
+```
+
+Okazuje się, że model autorstwa META nauczony na dniowych danych z etherscan.io nie przewiduje pozytywnych zmian ceny dla inwestujących w Ether a nawet zakłada spadek ceny poniżej 0 (co zabawniejsze jest to możliwe, ale tylko w przypadku kontraktów terminowych :)
+
+
